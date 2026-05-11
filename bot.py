@@ -28,13 +28,17 @@ ADVISORS = {
 
 client = AsyncAnthropic(api_key=ANTHROPIC_KEY)
 
-SYSTEM = """Ты — Пророк. Синтезируешь мнения советников и выдаёшь прогноз сценариев.
+SYSTEM_SHORT = """Ты — Пророк. Один абзац максимум.
+Прямой вердикт: да/нет + одна ключевая причина.
+Если нужен полный анализ — пусть пишет напрямую. По-русски."""
+
+SYSTEM_FULL = """Ты — Пророк. Синтезируешь мнения советников и выдаёшь прогноз сценариев.
 Тебе дают вопрос и ответы каждого советника.
-Структура ответа:
+Структура:
 🔮 Сценарий А: [если сделает X] → вероятный исход
 🔮 Сценарий Б: [если сделает Y] → вероятный исход
 ⚖️ Вердикт: конкретная рекомендация одним абзацем.
-Говори прямо, без воды. По-русски."""
+Прямо, без воды. По-русски."""
 
 async def log(event: str, msg: str):
     if not LOG_BOT_URL:
@@ -58,7 +62,7 @@ async def ask_advisor(name: str, url: str, question: str, user_id: int) -> str:
         logger.warning(f"Advisor {name} unavailable: {e}")
         return ""
 
-async def prophesy(question: str, user_id: int) -> str:
+async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str:
     """Gather all advisor opinions and synthesize a prophecy."""
     # Ask all advisors in parallel
     tasks = {
@@ -89,8 +93,8 @@ async def prophesy(question: str, user_id: int) -> str:
 
     msg = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=700,
-        system=SYSTEM,
+        max_tokens=150 if short_mode else 700,
+        system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
         messages=[{"role": "user", "content": prompt}]
     )
     return msg.content[0].text
@@ -104,8 +108,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     await log("MSG_IN", question[:80])
     await update.message.reply_text("🔮 Советуюсь с офисом...")
-    answer = await prophesy(question, YOUR_TELEGRAM_ID)
-    await update.message.reply_text(answer)
+    answer = await prophesy(question, YOUR_TELEGRAM_ID, short_mode=False)
+    await update.message.reply_text(answer, parse_mode=None)
     await log("MSG_OUT", answer[:80])
 
 # ── HTTP endpoint (for Filly routing) ────────────────────────────────────────
@@ -114,8 +118,17 @@ async def handle_task(request):
     question = data.get("message", "")
     user_id  = data.get("user_id", YOUR_TELEGRAM_ID)
     await log("MSG_IN", f"[HTTP] {question[:80]}")
-    response = await prophesy(question, user_id)
+    response = await prophesy(question, user_id, short_mode=True)
     await log("MSG_OUT", response[:80])
+    # Post directly to office group so Vlad sees it inline
+    if OFFICE_CHAT_ID:
+        try:
+            from telegram import Bot as TGBot
+            tg = TGBot(token=TELEGRAM_TOKEN)
+            await tg.send_message(chat_id=OFFICE_CHAT_ID,
+                text=f"Пророк:\n{response}", parse_mode=None)
+        except Exception as e:
+            logger.warning(f"Prophet group reply failed: {e}")
     return web.json_response({"status": "ok", "response": response})
 
 # ── Main ────────────────────────────────────────────────────────────────────

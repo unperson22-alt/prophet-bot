@@ -2,7 +2,8 @@
 prophet-bot — Пророк. Агрегатор AI-офиса.
 Собирает мнения всех ботов и выдаёт взвешенный прогноз сценариев.
 """
-import os, asyncio, logging, httpx
+import os
+import httpx, asyncio, logging, httpx
 from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -10,6 +11,26 @@ from anthropic import AsyncAnthropic
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+async def transcribe_voice(file_path: str) -> str | None:
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(file_path)
+            audio_data = r.content
+            r2 = await c.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                files={"file": ("voice.ogg", audio_data, "audio/ogg")},
+                data={"model": "whisper-large-v3-turbo", "language": "ru"}
+            )
+            return r2.json().get("text", "").strip() or None
+    except Exception as e:
+        logger.error(f"Transcription failed: {e}")
+        return None
+
 
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_KEY    = os.environ["ANTHROPIC_API_KEY"]
@@ -134,7 +155,7 @@ async def handle_task(request):
 # ── Main ────────────────────────────────────────────────────────────────────
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

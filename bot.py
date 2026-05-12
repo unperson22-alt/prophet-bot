@@ -9,6 +9,22 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from anthropic import AsyncAnthropic
 
+def _anthropic_call(client, **kwargs):
+    """Вызов Anthropic API с retry при 529 OverloadedError."""
+    import time
+    last_err = None
+    for delay in [0, 2, 4, 8]:
+        try:
+            if delay:
+                time.sleep(delay)
+            return _anthropic_call(client, **kwargs)
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                last_err = e
+                continue
+            raise
+    raise last_err
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -112,7 +128,7 @@ async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str
         f"Дай прогноз сценариев и вердикт."
     )
 
-    msg = await client.messages.create(
+    msg = await _anthropic_call(client, 
         model="claude-sonnet-4-6",
         max_tokens=150 if short_mode else 700,
         system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,

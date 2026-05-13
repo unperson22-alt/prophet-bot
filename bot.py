@@ -65,6 +65,10 @@ ADVISORS = {
 
 client = AsyncAnthropic(api_key=ANTHROPIC_KEY)
 
+RANDOM_REPLY_CHANCE_HUMAN = 0.40  # 40% на непрямые сообщения от людей
+RANDOM_REPLY_CHANCE_BOT   = 0.17  # 17% на сообщения от ботов
+
+
 SYSTEM_SHORT = """Ты — Пророк. Один абзац максимум.
 Прямой вердикт: да/нет + одна ключевая причина.
 Если нужен полный анализ — пусть пишет напрямую. По-русски."""
@@ -130,9 +134,24 @@ async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str
 
     msg = await _anthropic_call(client, 
         model="claude-sonnet-4-6",
-        max_tokens=150 if short_mode else 700,
+        max_tokens=400 if short_mode else 700,
         system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
         messages=[{"role": "user", "content": prompt}]
+    )
+    return msg.content[0].text
+
+
+SYSTEM_ORACLE = """Ты — Пророк. Коротко и мистически.
+Один абзац. Дай вердикт или наблюдение по теме — прямо и по делу.
+Можешь говорить загадочно, но конкретно. По-русски."""
+
+async def quick_prophesy(text: str) -> str:
+    """Быстрый ответ без сбора советников — для случайных ответов в группе."""
+    msg = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        system=SYSTEM_ORACLE,
+        messages=[{"role": "user", "content": text}]
     )
     return msg.content[0].text
 
@@ -168,10 +187,40 @@ async def handle_task(request):
             logger.warning(f"Prophet group reply failed: {e}")
     return web.json_response({"status": "ok", "response": response})
 
+
+# ── Group random replies ──────────────────────────────────────────────────────
+async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Случайные ответы в группе: 40% на людей, 17% на ботов."""
+    import random
+
+    msg = update.message
+    if not msg or not msg.text:
+        return
+
+    text     = msg.text.strip()
+    is_bot   = msg.from_user.is_bot if msg.from_user else False
+    txt_low  = text.lower()
+
+    # Прямое обращение — обрабатывает Филли, не дублируем
+    if any(txt_low.startswith(w) for w in ["пророк", "prophet", "@prophet"]):
+        return
+
+    chance = RANDOM_REPLY_CHANCE_BOT if is_bot else RANDOM_REPLY_CHANCE_HUMAN
+    if random.random() > chance:
+        return
+
+    try:
+        answer = await quick_prophesy(text)
+        await msg.reply_text(f"🔮 {answer}", parse_mode=None)
+        await log("RANDOM", f"{'bot' if is_bot else 'human'}: {text[:60]}")
+    except Exception as e:
+        logger.error(f"handle_group_message failed: {e}")
+
 # ── Main ────────────────────────────────────────────────────────────────────
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_group_message))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

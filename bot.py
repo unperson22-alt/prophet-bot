@@ -17,7 +17,7 @@ def _anthropic_call(client, **kwargs):
         try:
             if delay:
                 time.sleep(delay)
-            return _anthropic_call(client, **kwargs)
+            return client.messages.create(**kwargs)
         except Exception as e:
             if "529" in str(e) or "overloaded" in str(e).lower():
                 last_err = e

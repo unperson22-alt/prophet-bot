@@ -9,8 +9,48 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from anthropic import AsyncAnthropic
 
+# ── Ollama config ────────────────────────────────────────────────────────────
+OLLAMA_HOST    = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/\\")
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+class _OllamaResult:
+    def __init__(self, text):
+        from types import SimpleNamespace
+        self.content = [SimpleNamespace(text=text)]
+
+
+def _try_ollama(messages, system=None, timeout=20.0):
+    if not (OLLAMA_ENABLED and OLLAMA_HOST):
+        return None
+    try:
+        ol_messages = []
+        if system:
+            ol_messages.append({"role": "system", "content": system})
+        for m in messages:
+            content = m["content"] if isinstance(m["content"], str) else str(m["content"])
+            ol_messages.append({"role": m["role"], "content": content})
+        with httpx.Client(timeout=timeout) as cli:
+            r = cli.post(
+                f"{OLLAMA_HOST}/api/chat",
+                json={"model": OLLAMA_MODEL, "messages": ol_messages,
+                      "stream": False, "keep_alive": "30m"},
+            )
+            if r.status_code != 200:
+                return None
+            text = r.json().get("message", {}).get("content", "")
+            return _OllamaResult(text) if text else None
+    except Exception as e:
+        logger.info(f"Ollama unavailable, fallback to Anthropic: {type(e).__name__}: {e}")
+        return None
+
+
 def _anthropic_call(client, **kwargs):
-    """Вызов Anthropic API с retry при 529 OverloadedError."""
+    """LLM call. Tries Ollama first if enabled, falls back to Anthropic with 529 retry."""
+    ol = _try_ollama(kwargs.get("messages", []), kwargs.get("system"))
+    if ol is not None:
+        return ol
     import time
     last_err = None
     for delay in [0, 2, 4, 8]:

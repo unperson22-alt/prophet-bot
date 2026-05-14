@@ -66,7 +66,7 @@ ADVISORS = {
 client = AsyncAnthropic(api_key=ANTHROPIC_KEY)
 
 RANDOM_REPLY_CHANCE_HUMAN = 0.40  # 40% на непрямые сообщения от людей
-RANDOM_REPLY_CHANCE_BOT   = 0.17  # 17% на сообщения от ботов
+RANDOM_REPLY_CHANCE_BOT   = 0.30  # 30% на сообщения от ботов
 
 
 SYSTEM_SHORT = """Ты — Пророк. Один абзац максимум.

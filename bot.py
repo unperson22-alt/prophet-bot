@@ -9,7 +9,24 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from anthropic import AsyncAnthropic
 
-from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
+# ── Routing inline (no shared-lib dependency) ───────────────────────────────
+async def forward_to_filly(message: str, user_id: int, reply_bot: str,
+                           reply_chat_id: int, group_ctx: str = "") -> bool:
+    _filly = os.environ.get("FILLY_URL", "https://filly-bot-production.up.railway.app").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as _c:
+            _r = await _c.post(f"{_filly}/task", json={
+                "message": message, "user_id": user_id,
+                "reply_bot": reply_bot, "reply_chat_id": reply_chat_id,
+                "group_ctx": group_ctx,
+            })
+            return _r.status_code == 200
+    except Exception:
+        return False
+
+def is_routed(data: dict) -> bool:
+    return data.get("source", "").upper() in ("ФИЛЛИ", "FILLY", "DISPATCHER")
+# ─────────────────────────────────────────────────────────────────────────────
 # ── Ollama config ────────────────────────────────────────────────────────────
 OLLAMA_HOST    = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/\\")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")

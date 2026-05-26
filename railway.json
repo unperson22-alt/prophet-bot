@@ -1,1 +1,9 @@
-{"build": {"builder": "DOCKERFILE"}, "deploy": {"restartPolicyType": "ON_FAILURE"}}
+{
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE"
+  },
+  "_cache_bust": 1779812594
+}

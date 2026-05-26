@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from anthropic import AsyncAnthropic
 
+from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
 # ── Ollama config ────────────────────────────────────────────────────────────
 OLLAMA_HOST    = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/\\")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
@@ -223,6 +224,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await log("MSG_OUT", answer[:80])
 
 # ── HTTP endpoint (for Filly routing) ────────────────────────────────────────
+
+async def handle_reply(request):
+    """POST /reply — принимает ответ от Филли и отправляет пользователю."""
+    try:
+        data      = await request.json()
+        chat_id   = data.get("chat_id")
+        text      = data.get("text", "")
+        from_agent = data.get("from_agent", "")
+        if not chat_id or not text:
+            return web.Response(status=400, text="chat_id and text required")
+        prefix = f"[{from_agent}] " if from_agent else ""
+        await ptb.bot.send_message(chat_id=int(chat_id), text=prefix + text)
+        return web.Response(text="ok")
+    except Exception as e:
+        logger.error(f"[ПРОРОК] /reply error: {e}")
+        return web.Response(status=500, text=str(e))
+
 async def handle_health(request):
     return web.Response(text="ok")
 

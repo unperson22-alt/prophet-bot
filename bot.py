@@ -223,6 +223,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await log("MSG_OUT", answer[:80])
 
 # ── HTTP endpoint (for Filly routing) ────────────────────────────────────────
+async def handle_health(request):
+    return web.Response(text="ok")
+
+
 async def handle_task(request):
     data = await request.json()
     question = data.get("message", "")
@@ -281,6 +285,7 @@ async def main():
     # HTTP server
     http_app = web.Application()
     http_app.router.add_post("/task", handle_task)
+    http_app.router.add_get("/health", handle_health)
     runner = web.AppRunner(http_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)

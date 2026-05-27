@@ -319,8 +319,9 @@ async def main():
     await app.updater.start_polling()
     # HTTP server
     http_app = web.Application()
-    http_app.router.add_post("/task", handle_task)
-    http_app.router.add_get("/health", handle_health)
+    http_app.router.add_post("/task",  handle_task)
+    http_app.router.add_get("/health",  handle_health)
+    http_app.router.add_post("/reply",  handle_reply)
     runner = web.AppRunner(http_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)

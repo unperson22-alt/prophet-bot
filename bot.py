@@ -310,15 +310,36 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"handle_group_message failed: {e}")
 
 # ── Main ────────────────────────────────────────────────────────────────────
+
+_ptb_bot = None  # set in main()
+
+async def handle_send(request):
+    """POST /send {chat_id, text} — отправить от имени этого бота."""
+    secret = request.headers.get("X-Secret-Token", "")
+    if HTTP_SECRET and secret != HTTP_SECRET:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+        chat_id = int(body["chat_id"])
+        text    = str(body["text"])
+    except (KeyError, ValueError) as e:
+        return web.json_response({"error": f"bad request: {e}"}, status=400)
+    await _ptb_bot.send_message(chat_id=chat_id, text=text)
+    return web.json_response({"ok": True})
+
+
 async def main():
+    global _ptb_bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_group_message))
     await app.initialize()
     await app.start()
+    _ptb_bot = app.bot
     await app.updater.start_polling()
     # HTTP server
     http_app = web.Application()
+    http_app.router.add_post("/send",   handle_send)
     http_app.router.add_post("/task",  handle_task)
     http_app.router.add_get("/health",  handle_health)
     http_app.router.add_post("/reply",  handle_reply)

@@ -7,6 +7,7 @@ import httpx, asyncio, logging, httpx
 from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import MessageReactionHandler
 from anthropic import AsyncAnthropic
 
 # ── Routing inline (no shared-lib dependency) ───────────────────────────────
@@ -262,6 +263,47 @@ async def handle_health(request):
     return web.Response(text="ok")
 
 
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Реакции 👍/👎 → office:quality:{bot} (HASH up/down)."""
+    reaction = update.message_reaction
+    if not reaction:
+        return
+
+    chat_id = reaction.chat.id
+    msg_id  = reaction.message_id
+
+    try:
+        owner_raw = await redis_client.get(f"office:msg:{chat_id}:{msg_id}")
+    except Exception as e:
+        logger.warning(f"reaction owner lookup failed: {e}")
+        return
+    if not owner_raw or owner_raw != BOT_NAME_LOWER:
+        return
+
+    old_emojis = {r.emoji for r in (reaction.old_reaction or []) if getattr(r, "emoji", None)}
+    new_emojis = {r.emoji for r in (reaction.new_reaction or []) if getattr(r, "emoji", None)}
+    added   = new_emojis - old_emojis
+    removed = old_emojis - new_emojis
+
+    delta_up   = sum(1 for e in added if e in REACTION_UP)   - sum(1 for e in removed if e in REACTION_UP)
+    delta_down = sum(1 for e in added if e in REACTION_DOWN) - sum(1 for e in removed if e in REACTION_DOWN)
+
+    if delta_up == 0 and delta_down == 0:
+        return
+
+    try:
+        key = f"office:quality:{BOT_NAME_LOWER}"
+        if delta_up:
+            await redis_client.hincrby(key, "up", delta_up)
+        if delta_down:
+            await redis_client.hincrby(key, "down", delta_down)
+        logger.info(f"REACTION msg={msg_id} added={added} removed={removed} du={delta_up} dd={delta_down}")
+    except Exception as e:
+        logger.warning(f"quality hincrby failed: {e}")
+
+
+
+
 async def handle_task(request):
     data = await request.json()
     question = data.get("message", "")
@@ -333,6 +375,7 @@ async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_group_message))
+    app.add_handler(MessageReactionHandler(handle_reaction))
     await app.initialize()
     await app.start()
     _ptb_bot = app.bot

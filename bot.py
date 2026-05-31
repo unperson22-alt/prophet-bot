@@ -7,7 +7,11 @@ import httpx, asyncio, logging, httpx
 from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from telegram.ext import MessageReactionHandler
+try:
+    from telegram.ext import MessageReactionHandler
+    HAS_REACTION_HANDLER = True
+except ImportError:
+    HAS_REACTION_HANDLER = False
 from anthropic import AsyncAnthropic
 
 # ── Routing inline (no shared-lib dependency) ───────────────────────────────
@@ -375,7 +379,8 @@ async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_group_message))
-    app.add_handler(MessageReactionHandler(handle_reaction))
+    if HAS_REACTION_HANDLER:
+        app.add_handler(MessageReactionHandler(handle_reaction))
     await app.initialize()
     await app.start()
     _ptb_bot = app.bot

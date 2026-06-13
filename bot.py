@@ -3,7 +3,7 @@ prophet-bot — Пророк. Агрегатор AI-офиса.
 Собирает мнения всех ботов и выдаёт взвешенный прогноз сценариев.
 """
 import os
-import httpx, asyncio, logging, httpx
+import httpx, asyncio, logging
 from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -117,6 +117,20 @@ YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 OFFICE_CHAT_ID   = os.environ.get("OFFICE_CHAT_ID", "")
 LOG_BOT_URL      = os.environ.get("LOG_BOT_URL", "")
 HTTP_PORT        = 8080
+HTTP_SECRET      = os.environ.get("HTTP_SECRET", "")  # X-Secret-Token для /send
+
+# Feedback loop (реакции 👍/👎 → office:quality:{bot})
+BOT_NAME_LOWER = "пророк"
+REACTION_UP    = {"👍", "❤️", "🔥", "🥰", "👏", "🎉", "🤩", "🙏"}
+REACTION_DOWN  = {"👎", "💩", "🤬", "🤮", "😢"}
+
+# Redis — best-effort: если модуль/REDIS_URL есть, включаем quality-трекинг,
+# иначе handle_reaction тихо выключается (без краша и без жёсткой зависимости).
+try:
+    import redis.asyncio as aioredis
+except Exception:
+    aioredis = None
+redis_client = None
 
 # Internal Railway URLs for each advisor
 ADVISORS = {
@@ -205,8 +219,9 @@ async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str
         f"Дай прогноз сценариев и вердикт."
     )
 
-    msg = await _anthropic_call(client, 
-        model="claude-sonnet-4-6",
+    # Полный прогноз — ключевой синтез Пророка → Opus 4.8; короткий режим — Sonnet 4.6
+    msg = await _anthropic_call(client,
+        model="claude-sonnet-4-6" if short_mode else "claude-opus-4-8",
         max_tokens=400 if short_mode else 700,
         system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
         messages=[{"role": "user", "content": prompt}]
@@ -257,7 +272,7 @@ async def handle_reply(request):
         if not chat_id or not text:
             return web.Response(status=400, text="chat_id and text required")
         prefix = f"[{from_agent}] " if from_agent else ""
-        await ptb.bot.send_message(chat_id=int(chat_id), text=prefix + text)
+        await _ptb_bot.send_message(chat_id=int(chat_id), text=prefix + text)
         return web.Response(text="ok")
     except Exception as e:
         logger.error(f"[ПРОРОК] /reply error: {e}")
@@ -272,6 +287,8 @@ async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reaction = update.message_reaction
     if not reaction:
         return
+    if redis_client is None:
+        return  # quality-трекинг выключен (нет Redis) — тихо выходим
 
     chat_id = reaction.chat.id
     msg_id  = reaction.message_id
@@ -375,7 +392,15 @@ async def handle_send(request):
 
 
 async def main():
-    global _ptb_bot
+    global _ptb_bot, redis_client
+    if aioredis and os.environ.get("REDIS_URL"):
+        try:
+            redis_client = aioredis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+            await redis_client.ping()
+            logger.info("Redis подключён — quality-трекинг активен")
+        except Exception as e:
+            redis_client = None
+            logger.warning(f"Redis недоступен, quality-трекинг выключен: {e}")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_group_message))

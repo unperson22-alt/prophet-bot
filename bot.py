@@ -5,6 +5,7 @@ prophet-bot — Пророк. Агрегатор AI-офиса.
 import os
 import httpx, asyncio, logging
 from aiohttp import web
+from ai_office_shared.shared.auth import office_auth_middleware, office_headers
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 try:
@@ -24,7 +25,7 @@ async def forward_to_filly(message: str, user_id: int, reply_bot: str,
                 "message": message, "user_id": user_id,
                 "reply_bot": reply_bot, "reply_chat_id": reply_chat_id,
                 "group_ctx": group_ctx,
-            })
+            }, headers=office_headers())
             return _r.status_code == 200
     except Exception:
         return False
@@ -183,7 +184,7 @@ async def ask_advisor(name: str, url: str, question: str, user_id: int) -> str:
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(f"{url}/task",
-                json={"message": question, "user_id": user_id})
+                json={"message": question, "user_id": user_id}, headers=office_headers())
             data = r.json()
             return data.get("response", "")
     except Exception as e:
@@ -411,7 +412,7 @@ async def main():
     _ptb_bot = app.bot
     await app.updater.start_polling()
     # HTTP server
-    http_app = web.Application()
+    http_app = web.Application(middlewares=[office_auth_middleware])
     http_app.router.add_post("/send",   handle_send)
     http_app.router.add_post("/task",  handle_task)
     http_app.router.add_get("/health",  handle_health)

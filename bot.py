@@ -13,7 +13,8 @@ try:
     HAS_REACTION_HANDLER = True
 except ImportError:
     HAS_REACTION_HANDLER = False
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, APIError
+from ai_office_shared.shared.logging import log_event
 
 # ── Routing inline (no shared-lib dependency) ───────────────────────────────
 async def forward_to_filly(message: str, user_id: int, reply_bot: str,
@@ -221,12 +222,18 @@ async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str
     )
 
     # Полный прогноз — ключевой синтез Пророка → Opus 4.8; короткий режим — Sonnet 4.6
-    msg = await _anthropic_call(client,
-        model="claude-sonnet-4-6" if short_mode else "claude-opus-4-8",
-        max_tokens=400 if short_mode else 700,
-        system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    try:
+        msg = await _anthropic_call(client,
+            model="claude-sonnet-4-6" if short_mode else "claude-opus-4-8",
+            max_tokens=400 if short_mode else 700,
+            system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except APIError as e:
+        if redis_client is not None:
+            await log_event(redis_client, BOT_NAME_LOWER, "api_error", level="error",
+                            user_id=user_id, error=str(e)[:200])
+        raise
     return msg.content[0].text
 
 

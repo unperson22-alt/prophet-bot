@@ -262,11 +262,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type in ["group", "supergroup"]:
         return
     question = update.message.text
-    await log("MSG_IN", question[:80])
+    await log("MSG_IN", question)
     await update.message.reply_text("🔮 Советуюсь с офисом...")
     answer = await prophesy(question, YOUR_TELEGRAM_ID, short_mode=False)
     await update.message.reply_text(answer, parse_mode=None)
-    await log("MSG_OUT", answer[:80])
+    await log("MSG_OUT", answer)
 
 # ── HTTP endpoint (for Filly routing) ────────────────────────────────────────
 
@@ -337,9 +337,9 @@ async def handle_task(request):
     data = await request.json()
     question = data.get("message", "")
     user_id  = data.get("user_id", YOUR_TELEGRAM_ID)
-    await log("MSG_IN", f"[HTTP] {question[:80]}")
+    await log("MSG_IN", f"[HTTP] {question}")
     response = await prophesy(question, user_id, short_mode=True)
-    await log("MSG_OUT", response[:80])
+    await log("MSG_OUT", response)
     # Post directly to office group so Vlad sees it inline
     if OFFICE_CHAT_ID:
         try:

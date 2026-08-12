@@ -15,6 +15,9 @@ except ImportError:
     HAS_REACTION_HANDLER = False
 from anthropic import AsyncAnthropic, APIError
 from ai_office_shared.shared.logging import log_event
+from ai_office_shared.shared import banter as _banter
+from ai_office_shared.shared import group_history as _ghist
+from ai_office_shared.shared.identity import roster_prompt
 
 # ── Routing inline (no shared-lib dependency) ───────────────────────────────
 async def forward_to_filly(message: str, user_id: int, reply_bot: str,
@@ -122,6 +125,7 @@ HTTP_PORT        = 8080
 HTTP_SECRET      = os.environ.get("HTTP_SECRET", "")  # X-Secret-Token для /send
 
 # Feedback loop (реакции 👍/👎 → office:quality:{bot})
+BOT_NAME       = "Пророк"
 BOT_NAME_LOWER = "пророк"
 REACTION_UP    = {"👍", "❤️", "🔥", "🥰", "👏", "🎉", "🤩", "🙏"}
 REACTION_DOWN  = {"👎", "💩", "🤬", "🤮", "😢"}
@@ -226,7 +230,10 @@ async def prophesy(question: str, user_id: int, short_mode: bool = False) -> str
         msg = await _anthropic_call(client,
             model="claude-sonnet-4-6" if short_mode else "claude-opus-4-8",
             max_tokens=400 if short_mode else 700,
-            system=SYSTEM_SHORT if short_mode else SYSTEM_FULL,
+            # Ростер офиса фактом: в промте Пророка коллеги были одной строкой
+            # «и боты-коллеги» — кто именно, он не знал.
+            system=(SYSTEM_SHORT if short_mode else SYSTEM_FULL)
+                   + "\n\n" + roster_prompt(BOT_NAME),
             messages=[{"role": "user", "content": prompt}]
         )
     except APIError as e:
@@ -241,16 +248,16 @@ SYSTEM_ORACLE = """Ты — Пророк. В офисной группе гов�
 
 Один абзац, не больше. Реагируй на суть разговора — брось наблюдение, предупреди о риске, или дай неожиданный угол зрения. Можешь быть загадочным, но всегда конкретным. Без воды, без "интересный вопрос".
 
-Офис: Влад (хозяин, строит автобизнес), Лук (друг со школы), и несколько ботов-коллег.
+Офис: Влад (хозяин, строит автобизнес), Лук (друг со школы), и боты-коллеги.
 
 По-русски."""
 
-async def quick_prophesy(text: str) -> str:
+async def quick_prophesy(text: str, short: bool = False) -> str:
     """Быстрый ответ без сбора советников — для случайных ответов в группе."""
     msg = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=SYSTEM_ORACLE,
+        max_tokens=150 if short else 300,
+        system=SYSTEM_ORACLE + "\n\n" + roster_prompt(BOT_NAME),
         messages=[{"role": "user", "content": text}]
     )
     return msg.content[0].text
@@ -335,10 +342,25 @@ async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_task(request):
     data = await request.json()
-    question = data.get("message", "")
-    user_id  = data.get("user_id", YOUR_TELEGRAM_ID)
-    await log("MSG_IN", f"[HTTP] {question}")
-    response = await prophesy(question, user_id, short_mode=True)
+    question  = data.get("message", "")
+    user_id   = data.get("user_id", YOUR_TELEGRAM_ID)
+    group_ctx = data.get("group_ctx", "")
+    sender    = _banter.sender_of(data)
+    # Пророк входит в пул болталки, но его handle_task не читал ни автора,
+    # ни контекст группы — он отвечал вслепую на вырванную из нити фразу.
+    if sender:
+        question = f"[от {sender}] {question}"
+    if group_ctx:
+        question = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{question}"
+    await log("MSG_IN", f"[HTTP] {question[:200]}")
+    # Болталка — это одна реплика в чат, а не консилиум. prophesy() опрашивает
+    # ВСЕХ советников по HTTP и, если они недоступны, возвращает «❌ Советники
+    # недоступны» — постить такое в ответ на трёп нельзя. Для болталки берём
+    # quick_prophesy: один вызов, без фан-аута.
+    if _banter.is_banter(data):
+        response = await quick_prophesy(question, short=True)
+    else:
+        response = await prophesy(question, user_id, short_mode=True)
     await log("MSG_OUT", response)
     # Post directly to office group so Vlad sees it inline
     if OFFICE_CHAT_ID:
@@ -347,6 +369,7 @@ async def handle_task(request):
             tg = TGBot(token=TELEGRAM_TOKEN)
             await tg.send_message(chat_id=OFFICE_CHAT_ID,
                 text=f"Пророк:\n{response}", parse_mode=None)
+            await _ghist.push(redis_client, BOT_NAME, response)
         except Exception as e:
             logger.warning(f"Prophet group reply failed: {e}")
     return web.json_response({"status": "ok", "response": response})
@@ -369,8 +392,12 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if any(txt_low.startswith(w) for w in ["пророк", "prophet", "@prophet"]):
         return
 
-    chance = RANDOM_REPLY_CHANCE_BOT if is_bot else RANDOM_REPLY_CHANCE_HUMAN
-    if random.random() > chance:
+    # Ботам тут отвечать нельзя и не получится: Telegram не доставляет боту
+    # сообщения других ботов, ветка is_bot не срабатывала ни разу. Межботовые
+    # реплики идут по HTTP /task (ai_office_shared.shared.banter).
+    if is_bot:
+        return
+    if random.random() > RANDOM_REPLY_CHANCE_HUMAN:
         return
 
     try:

@@ -61,6 +61,11 @@ class _FakeRequest:
 
 
 class TestClaimAnswer(unittest.TestCase):
+    """
+    Формат ключа и нормализация закреплены в ai_office_shared/tests/test_dedup.py
+    — здесь только то, что замок подключён к обоим входам Пророка.
+    """
+
     def setUp(self):
         self._orig = bot.redis_client
         bot.redis_client = FakeRedis()
@@ -79,9 +84,6 @@ class TestClaimAnswer(unittest.TestCase):
     def test_different_messages_do_not_block_each_other(self):
         self.assertTrue(run(bot.claim_answer("первое")))
         self.assertTrue(run(bot.claim_answer("второе")))
-
-    def test_key_is_namespaced_to_this_bot(self):
-        self.assertTrue(bot._answer_key("x").startswith("office:answered:пророк:"))
 
     def test_broken_redis_is_fail_open(self):
         bot.redis_client = FakeRedis(broken=True)

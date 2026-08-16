@@ -4,6 +4,7 @@ prophet-bot — Пророк. Агрегатор AI-офиса.
 """
 import os
 import httpx, asyncio, logging
+import hashlib
 from aiohttp import web
 from ai_office_shared.shared.auth import office_auth_middleware, office_headers
 from telegram import Update
@@ -137,6 +138,52 @@ try:
 except Exception:
     aioredis = None
 redis_client = None
+
+
+# ── Один ответ на одно сообщение ─────────────────────────────────────────────
+# У Пророка два независимых входа в группу, и друг о друге они не знают:
+#   1. handle_group_message — RANDOM_REPLY_CHANCE_HUMAN = 0.40, он берёт слово
+#      сам, не спрашивая Филли;
+#   2. HTTP /task, когда роутер выбрал Пророка.
+# Тот же расклад, что у Гослинга, где он 16.08 08:41 дал два ответа на одно
+# «доброе утро» — короткий и монолог, с разницей в четыре секунды. У Пророка
+# это пока не выстрелило только потому, что роутер зовёт его редко.
+#
+# ВНИМАНИЕ: это вторая копия замка (первая — в gosling-bot). Канонический дом у
+# неё в ai_office_shared, но пин Пророка отстаёт от main на 45 коммитов, и
+# тащить их в живого бота ради двенадцати строк несоразмерно. Переносить в
+# shared — когда пин будут бампать осознанно, вместе с Гослингом.
+ANSWER_LOCK_TTL = 180   # с — заведомо больше самого долгого ответа
+
+
+def _answer_key(text: str) -> str:
+    """
+    Замок по ТЕКСТУ, а не по message_id: у HTTP-пути message_id нет вовсе,
+    Филли передаёт только текст.
+    """
+    norm = " ".join((text or "").split()).lower()[:300]
+    return "office:answered:" + BOT_NAME_LOWER + ":" + \
+           hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+
+
+async def claim_answer(text: str) -> bool:
+    """
+    Занять право ответить. False — по этому сообщению уже отвечает другой путь.
+
+    SET NX EX одной операцией: раздельные «проверить» и «занять» оставили бы
+    щель ровно того размера, в которую два пути и попадают — секунда-полторы.
+    Fail-open: Redis недоступен — лучше два ответа, чем ни одного.
+    """
+    if redis_client is None or not text:
+        return True
+    try:
+        got = await redis_client.set(_answer_key(text), "1", nx=True,
+                                     ex=ANSWER_LOCK_TTL)
+        return bool(got)
+    except Exception as e:
+        logger.warning(f"[dedup] замок недоступен, отвечаю без него: {e}")
+        return True
+
 
 # Internal Railway URLs for each advisor
 ADVISORS = {
@@ -343,6 +390,9 @@ async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_task(request):
     data = await request.json()
     question  = data.get("message", "")
+    # Текст ДО обвеса [от X] и [Контекст группового чата] — только он совпадает
+    # с тем, что видит телеграм-путь, а значит только по нему сходится замок.
+    message_raw = question
     user_id   = data.get("user_id", YOUR_TELEGRAM_ID)
     group_ctx = data.get("group_ctx", "")
     sender    = _banter.sender_of(data)
@@ -353,11 +403,22 @@ async def handle_task(request):
     if group_ctx:
         question = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{question}"
     await log("MSG_IN", f"[HTTP] {question[:200]}")
+
+    # Болталка — отдельная реплика, а не второй заход на то же сообщение:
+    # её замок не касается. Всё остальное проходит через claim_answer, потому
+    # что у Пророка два независимых входа в группу (см. комментарий к замку).
+    is_banter = _banter.is_banter(data)
+    if not is_banter and not await claim_answer(message_raw):
+        logger.info("[dedup] на это сообщение уже отвечает телеграм-путь")
+        # 200, а не ошибка: Филли доставила, отвечать было не нужно.
+        return web.json_response({"status": "ok", "response": "",
+                                  "skipped": "duplicate"})
+
     # Болталка — это одна реплика в чат, а не консилиум. prophesy() опрашивает
     # ВСЕХ советников по HTTP и, если они недоступны, возвращает «❌ Советники
     # недоступны» — постить такое в ответ на трёп нельзя. Для болталки берём
     # quick_prophesy: один вызов, без фан-аута.
-    if _banter.is_banter(data):
+    if is_banter:
         response = await quick_prophesy(question, short=True)
     else:
         response = await prophesy(question, user_id, short_mode=True)
@@ -367,8 +428,13 @@ async def handle_task(request):
         try:
             from telegram import Bot as TGBot
             tg = TGBot(token=TELEGRAM_TOKEN)
+            # Имя НЕ приклеиваем. Telegram и так рисует «Пророк» над каждым
+            # сообщением бота, поэтому `f"Пророк:\n{response}"` давал в чате
+            # дубль подписи — видно на скриншоте 16.08 12:26. В логи при этом
+            # уходил чистый response (строкой выше), так что по логам баг был
+            # не виден вовсе: расходились именно чат и лог.
             await tg.send_message(chat_id=OFFICE_CHAT_ID,
-                text=f"Пророк:\n{response}", parse_mode=None)
+                text=response, parse_mode=None)
             await _ghist.push(redis_client, BOT_NAME, response)
         except Exception as e:
             logger.warning(f"Prophet group reply failed: {e}")
@@ -398,6 +464,12 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if is_bot:
         return
     if random.random() > RANDOM_REPLY_CHANCE_HUMAN:
+        return
+
+    # Замок занимаем ПОСЛЕ броска: несработавший бросок не должен затыкать
+    # HTTP-путь, ради которого Филли и звала.
+    if not await claim_answer(text):
+        logger.info("[dedup] на это сообщение уже отвечает HTTP-путь — молчу")
         return
 
     try:

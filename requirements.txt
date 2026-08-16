@@ -2,4 +2,4 @@ python-telegram-bot==20.7
 anthropic
 httpx
 aiohttp
-ai-office-shared @ git+https://github.com/unperson22-alt/ai-office-shared.git@d6fcf89607cdf43f302c8f6a40cb3653ef664a38
+ai-office-shared @ git+https://github.com/unperson22-alt/ai-office-shared.git@b30003ac6f585dc71437b6335ec0f936ecfa8ecf
